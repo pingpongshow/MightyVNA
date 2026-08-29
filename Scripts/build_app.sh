@@ -10,10 +10,25 @@ CONFIG="${1:-release}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-echo "==> Building ($CONFIG)"
-swift build -c "$CONFIG"
+# Release builds are universal (Apple Silicon + Intel) so the app runs anywhere.
+# Set UNIVERSAL=0 to build only for this Mac, which is faster.
+UNIVERSAL="${UNIVERSAL:-1}"
 
-BIN="$(swift build -c "$CONFIG" --show-bin-path)/MightyVNA"
+if [ "$CONFIG" = "release" ] && [ "$UNIVERSAL" = "1" ]; then
+    echo "==> Building (release, universal: arm64 + x86_64)"
+    swift build -c release --arch arm64 --arch x86_64
+    BIN="$ROOT/.build/apple/Products/Release/MightyVNA"
+else
+    echo "==> Building ($CONFIG)"
+    swift build -c "$CONFIG"
+    BIN="$(swift build -c "$CONFIG" --show-bin-path)/MightyVNA"
+fi
+
+if [ ! -f "$BIN" ]; then
+    echo "error: built binary not found at $BIN" >&2
+    exit 1
+fi
+
 APP="$ROOT/build/MightyVNA.app"
 
 echo "==> Assembling $APP"
@@ -84,4 +99,5 @@ echo "==> Signing (ad-hoc)"
 codesign --force --deep --sign - "$APP" 2>/dev/null || echo "    codesign skipped"
 
 echo "==> Done: $APP"
+echo "    architectures: $(lipo -archs "$APP/Contents/MacOS/MightyVNA")"
 echo "    open \"$APP\""
