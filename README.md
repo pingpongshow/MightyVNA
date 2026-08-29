@@ -215,4 +215,7 @@ See [Docs/PROTOCOLS.md](Docs/PROTOCOLS.md) for the full command, register and pa
 
 ## Licence
 
-Written for Stephen. Do as you like with it.
+GPL-3.0. See [LICENSE](LICENSE).
+
+This matches the licensing of the wider NanoVNA software ecosystem (NanoVNA-App, NanoVNA-QT and the
+LibreVNA project itself are all GPL), so protocol work can flow back and forth between them.
