@@ -27,9 +27,10 @@ public final class ASCIIShellDriver: VNADriver {
     public func connect() throws {
         try port.open()
         log(.note, "Opened \(port.path)")
-        // Wake the shell and swallow whatever banner is pending.
+        // Wake the shell and swallow whatever banner or half-typed line is pending.
         port.flushAll()
         _ = try? runCommand("", timeout: 1.5)
+        drainInput()
         try identify()
     }
 
@@ -82,17 +83,65 @@ public final class ASCIIShellDriver: VNADriver {
 
     // MARK: - Command plumbing
 
+    /// Commands end with a bare CR. The ChibiOS shell treats CR and LF as separate line
+    /// endings, so sending CRLF produces a second, empty command and a stray `ch> ` prompt
+    /// that arrives late and gets mistaken for the end of the next command's reply.
+    private static let lineEnding = "\r"
+
     @discardableResult
     private func runCommand(_ command: String, timeout: TimeInterval) throws -> String {
         guard port.isOpen else { throw DriverError.notConnected }
         port.flushInput()
         if !command.isEmpty { log(.sent, command) }
-        try port.write(command + "\r\n")
-        let data = try port.readUntil(Self.prompt, timeout: timeout, idleTimeout: max(0.35, timeout / 3))
+        try port.write(command + Self.lineEnding)
+        let data = try readReply(to: command, timeout: timeout)
         let text = String(decoding: data, as: UTF8.self)
         let cleaned = strip(response: text, command: command)
         if !cleaned.isEmpty { log(.received, cleaned) }
         return cleaned
+    }
+
+    /// Read one command's reply: everything from the shell's echo of `command` up to the
+    /// prompt that follows it. Output that precedes the echo is left over from an earlier
+    /// exchange and is discarded, so a late prompt can never end this reply early.
+    private func readReply(to command: String, timeout: TimeInterval) throws -> Data {
+        let idleTimeout = max(0.35, timeout / 3)
+        let echo = Data(command.utf8)
+        let deadline = Date().addingTimeInterval(timeout)
+        var buffer = Data()
+        var lastActivity = Date()
+        var replyStart: Int? = command.isEmpty ? 0 : nil
+
+        while true {
+            if replyStart == nil, let range = buffer.range(of: echo) {
+                replyStart = range.lowerBound
+            }
+            if let start = replyStart,
+               buffer.range(of: Self.prompt, in: (start + echo.count)..<buffer.count) != nil {
+                return buffer.subdata(in: start..<buffer.count)
+            }
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { throw SerialError.timeout }
+            let chunk = try port.readAvailable(maxBytes: 8192, timeout: min(remaining, 0.15))
+            if chunk.isEmpty {
+                // A firmware that stops talking mid-reply, or never echoes, still returns
+                // what it sent once the line goes quiet.
+                if !buffer.isEmpty, Date().timeIntervalSince(lastActivity) > idleTimeout {
+                    return buffer.subdata(in: (replyStart ?? 0)..<buffer.count)
+                }
+                continue
+            }
+            lastActivity = Date()
+            buffer.append(chunk)
+        }
+    }
+
+    /// Discard output until the line has been quiet briefly.
+    private func drainInput(quiet: TimeInterval = 0.15, limit: TimeInterval = 1.0) {
+        let deadline = Date().addingTimeInterval(limit)
+        while Date() < deadline {
+            guard let chunk = try? port.readAvailable(maxBytes: 8192, timeout: quiet), !chunk.isEmpty else { return }
+        }
     }
 
     /// Remove the echoed command and the trailing prompt.
@@ -242,7 +291,7 @@ public final class ASCIIShellDriver: VNADriver {
         guard info.supports("capture") else { throw DriverError.unsupported("screen capture") }
         port.flushAll()
         log(.sent, "capture")
-        try port.write("capture\r\n")
+        try port.write("capture" + Self.lineEnding)
 
         // Read until the stream goes idle, then match the byte count to a known screen size.
         var data = Data()

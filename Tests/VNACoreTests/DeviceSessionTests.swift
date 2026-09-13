@@ -110,6 +110,24 @@ final class DeviceSessionTests: XCTestCase {
         XCTAssertNil(DeviceIdentity.model(fromBanner: "some other instrument"))
     }
 
+    func testAutoConnectOnlyPicksRecognisedAnalysers() {
+        var nanoVNAF = SerialPortInfo(path: "/dev/cu.usbmodem00000000001A1", name: "usbmodem00000000001A1")
+        nanoVNAF.vendorID = 0x0483
+        nanoVNAF.productID = 0x5740
+        nanoVNAF.usbProductName = "NanoVnaPro Virtual ComPort"
+        XCTAssertTrue(DeviceIdentity.isAutoConnectCandidate(.serial(nanoVNAF)))
+
+        var teensy = SerialPortInfo(path: "/dev/cu.usbmodem205863601", name: "usbmodem205863601")
+        teensy.vendorID = 0x16C0
+        teensy.productID = 0x0483
+        teensy.usbProductName = "USB Serial"
+        XCTAssertFalse(DeviceIdentity.isAutoConnectCandidate(.serial(teensy)))
+
+        // Even a board that calls itself a VNA is not probed if it is a known dev-board vendor.
+        teensy.usbProductName = "VNA experiment"
+        XCTAssertFalse(DeviceIdentity.isAutoConnectCandidate(.serial(teensy)))
+    }
+
     func testDeviceIdentificationFromVariant() {
         XCTAssertEqual(DeviceIdentity.model(fromVariant: 0x02).id, "nanovna-v2")
         XCTAssertEqual(DeviceIdentity.model(fromVariant: 0xFF).id, "generic-v2")

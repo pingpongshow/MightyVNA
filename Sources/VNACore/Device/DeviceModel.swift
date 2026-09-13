@@ -279,6 +279,26 @@ public enum DeviceIdentity {
         return score
     }
 
+    /// USB vendors of microcontroller boards that often share a desk with an analyser
+    /// (PJRC Teensy, Arduino, Espressif, Raspberry Pi, Adafruit). Never probed automatically.
+    static let microcontrollerVendorIDs: Set<Int> = [0x16C0, 0x2341, 0x2A03, 0x303A, 0x2E8A, 0x239A]
+
+    /// Score a serial port must reach to be opened without the user asking: a VNA-like
+    /// product name, or the STM32 virtual COM port most NanoVNA firmware uses.
+    static let autoConnectThreshold = 80
+
+    /// True when `device` is recognisably an analyser, so it is safe to open and probe
+    /// on launch or hot-plug. Anything uncertain waits for the user to press Connect.
+    public static func isAutoConnectCandidate(_ device: DiscoveredDevice) -> Bool {
+        switch device {
+        case .usb:
+            return device.knownProtocol != nil
+        case .serial(let port):
+            if let vendor = port.vendorID, microcontrollerVendorIDs.contains(vendor) { return false }
+            return likelihoodScore(for: port) >= autoConnectThreshold
+        }
+    }
+
     /// Match a firmware banner (from `version` / `info`) to a catalogue entry.
     public static func model(fromBanner banner: String) -> DeviceModel? {
         let text = banner.lowercased()

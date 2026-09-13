@@ -70,6 +70,9 @@ final class AppModel: ObservableObject {
     private var accumulator = SweepAccumulator()
     private var sweepTask: Task<Void, Never>?
     private var portRefreshTimer: Timer?
+    private var autoConnectEnabled = true
+    private var autoConnectDeclined = Set<String>()
+    private var connectedDeviceID: String?
 
     init() {
         session.trafficHandler = { [weak self] entry in
@@ -78,18 +81,22 @@ final class AppModel: ObservableObject {
         session.progressHandler = { [weak self] value in
             Task { @MainActor in self?.sweepProgress = value }
         }
+        // `MightyVNA --simulator` starts against the synthetic device, which is handy
+        // for demos and for working on the app with no hardware to hand.
+        let arguments = CommandLine.arguments
+        let simulatorSetting = ProcessInfo.processInfo.environment["MIGHTYVNA_SIMULATOR"]
+        let wantsLibreSimulator = arguments.contains("--librevna-simulator") || simulatorSetting == "librevna"
+        let wantsSimulator = arguments.contains("--simulator") || simulatorSetting == "1"
+        autoConnectEnabled = !wantsLibreSimulator && !wantsSimulator
+
         refreshPorts()
         selectedTraceID = workspace.traces.first?.id
         activeMarkerID = workspace.markers.first?.id
         startPortMonitoring()
 
-        // `MightyVNA --simulator` starts against the synthetic device, which is handy
-        // for demos and for working on the app with no hardware to hand.
-        if CommandLine.arguments.contains("--librevna-simulator")
-            || ProcessInfo.processInfo.environment["MIGHTYVNA_SIMULATOR"] == "librevna" {
+        if wantsLibreSimulator {
             connectLibreVNASimulator()
-        } else if CommandLine.arguments.contains("--simulator")
-            || ProcessInfo.processInfo.environment["MIGHTYVNA_SIMULATOR"] == "1" {
+        } else if wantsSimulator {
             connectSimulator()
         }
     }
@@ -104,6 +111,20 @@ final class AppModel: ObservableObject {
         } else if selectedDevice == nil {
             selectedDevice = discovered.first
         }
+        // A device that was unplugged gets a fresh automatic attempt when it returns.
+        autoConnectDeclined.formIntersection(discovered.map(\.id))
+        autoConnectIfPossible()
+    }
+
+    /// Connect to a recognised analyser at launch or when one is plugged in. Devices the
+    /// user disconnected from, or that failed to connect, are left alone until replugged.
+    private func autoConnectIfPossible() {
+        guard autoConnectEnabled, !connection.isConnected, !connection.isBusy else { return }
+        guard let device = devices.first(where: {
+            DeviceIdentity.isAutoConnectCandidate($0) && !autoConnectDeclined.contains($0.id)
+        }) else { return }
+        selectedDevice = device
+        connect()
     }
 
     private func startPortMonitoring() {
@@ -129,6 +150,7 @@ final class AppModel: ObservableObject {
         Task {
             do {
                 let info = try await session.connect(to: device, preference: connectionPreference)
+                connectedDeviceID = device.id
                 deviceInfo = info
                 connection = .connected(info.model.name)
                 batteryMillivolts = info.batteryMillivolts
@@ -139,6 +161,7 @@ final class AppModel: ObservableObject {
                 hasUnsavedChanges = true
                 if continuousSweep { startSweeping() }
             } catch {
+                autoConnectDeclined.insert(device.id)
                 connection = .failed(error.localizedDescription)
                 statusMessage = "Connection failed"
                 alertMessage = "Could not connect to \(device.displayName).\n\n\(error.localizedDescription)"
@@ -177,6 +200,10 @@ final class AppModel: ObservableObject {
 
     func disconnect() {
         stopSweeping()
+        if let id = connectedDeviceID {
+            autoConnectDeclined.insert(id)
+            connectedDeviceID = nil
+        }
         Task {
             await session.disconnect()
             connection = .disconnected
